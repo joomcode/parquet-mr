@@ -950,7 +950,7 @@ public class ParquetFileReader implements Closeable {
     // actually read all the chunks
     ChunkListBuilder builder = new ChunkListBuilder(block.getRowCount());
     for (ConsecutivePartList consecutiveChunks : allParts) {
-      consecutiveChunks.readAll(f, builder);
+      consecutiveChunks.readAll(file, builder);
     }
     for (Chunk chunk : builder.build()) {
       readChunkPages(chunk, block, rowGroup);
@@ -1074,7 +1074,7 @@ public class ParquetFileReader implements Closeable {
     }
     // actually read all the chunks
     for (ConsecutivePartList consecutiveChunks : allParts) {
-      consecutiveChunks.readAll(f, builder);
+      consecutiveChunks.readAll(file, builder);
     }
     for (Chunk chunk : builder.build()) {
       readChunkPages(chunk, block, rowGroup);
@@ -1760,32 +1760,70 @@ public class ParquetFileReader implements Closeable {
      * @param builder used to build chunk list to read the pages for the different columns
      * @throws IOException if there is an error while reading from the stream
      */
-    public void readAll(SeekableInputStream f, ChunkListBuilder builder) throws IOException {
-      f.seek(offset);
-
+    public void readAll(InputFile file, ChunkListBuilder builder) throws IOException {
       int fullAllocations = Math.toIntExact(length / options.getMaxAllocationSize());
       int lastAllocationSize = Math.toIntExact(length % options.getMaxAllocationSize());
 
       int numAllocations = fullAllocations + (lastAllocationSize > 0 ? 1 : 0);
       List<ByteBuffer> buffers = new ArrayList<>(numAllocations);
+      List<Long> offsets = new ArrayList<>(numAllocations);
 
       for (int i = 0; i < fullAllocations; i += 1) {
         buffers.add(options.getAllocator().allocate(options.getMaxAllocationSize()));
+        offsets.add(offset + (long) options.getMaxAllocationSize() * i);
       }
 
       if (lastAllocationSize > 0) {
         buffers.add(options.getAllocator().allocate(lastAllocationSize));
+        offsets.add(offset + (long) options.getMaxAllocationSize() * fullAllocations);
       }
 
-      for (ByteBuffer buffer : buffers) {
-        f.readFully(buffer);
-        buffer.flip();
+      long startAll = System.currentTimeMillis();
+      LOG.info("Reading all data");
+      List<Callable<Integer>> tasks = new ArrayList<>();
+      for (int i = 0; i < buffers.size(); i++) {
+        int localIndex = i;
+        tasks.add(() -> {
+          ByteBuffer buffer = buffers.get(localIndex);
+          try (SeekableInputStream seekableInputStream = file.newStream()) {
+            long start = System.currentTimeMillis();
+            seekableInputStream.seek(offsets.get(localIndex));
+            seekableInputStream.readFully(buffer);
+            buffer.flip();
+//            long time = System.currentTimeMillis() - start;
+//            if(time > 0) {
+//              LOG.info("Reading one buffer done: {} ms, {} Mb/s", time, options.getMaxAllocationSize() / 1024d / 1024 / (time / 1000d));
+//            } else {
+//              LOG.info("Reading one buffer done: {} ms, {} Mb/s", time, 0);
+//            }
+            return 0;
+          }
+        });
       }
+
+      try {
+//        for (Callable<Integer> task : tasks) {
+//          task.call();
+//        }
+        runAllInParallel(4, tasks);
+      } catch (Exception e) {
+        throw new RuntimeException(e);
+      }
+
+      long totslTime = System.currentTimeMillis() - startAll;
+      double speed;
+      if (totslTime > 0) {
+        speed = (double) length / 1024d / 1024 / (totslTime / 1000d);
+      } else {
+        speed = 0;
+      }
+      LOG.info("Reading all data done: {} ms, total speed {}", totslTime, speed);
 
       // report in a counter the data we just scanned
       BenchmarkCounter.incrementBytesRead(length);
       ByteBufferInputStream stream = ByteBufferInputStream.wrap(buffers);
-      for (final ChunkDescriptor descriptor : chunks) {
+      for (int i = 0; i < chunks.size(); i++) {
+        ChunkDescriptor descriptor = chunks.get(i);
         builder.add(descriptor, stream.sliceBuffers(descriptor.size), f);
       }
     }

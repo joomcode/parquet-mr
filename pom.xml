@@ -9,7 +9,7 @@
 
   <groupId>org.apache.parquet</groupId>
   <artifactId>parquet</artifactId>
-  <version>1.13.0-SNAPSHOT</version>
+  <version>1.13.0-parallel</version>
   <packaging>pom</packaging>
 
   <name>Apache Parquet MR</name>
@@ -640,4 +640,12 @@
       </build>
     </profile>
   </profiles>
+
+  <distributionManagement>
+    <repository>
+      <id>joom-maven</id>
+      <name>JFrog</name>
+      <url>https://jfrog.joom.it/artifactory/joom-maven</url>
+    </repository>
+  </distributionManagement>
 </project>
